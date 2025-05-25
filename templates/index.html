@@ -1,0 +1,575 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reddit Comment Viewer</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background-color: #f6f7f8;
+            color: #1a1a1b;
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        header {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        
+        h1 {
+            color: #1a1a1b;
+            margin-bottom: 20px;
+        }
+        
+        .controls {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+        
+        label {
+            font-size: 14px;
+            color: #696969;
+        }
+        
+        input, select, button {
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        
+        input[type="url"] {
+            flex: 1;
+            min-width: 300px;
+        }
+        
+        button {
+            background-color: #0079d3;
+            color: white;
+            border: none;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+        
+        button:hover {
+            background-color: #0060a8;
+        }
+        
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .stats {
+            background-color: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .comment {
+            background-color: #fff;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            transition: transform 0.2s;
+        }
+        
+        .comment:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        
+        .comment-header {
+            padding: 15px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+        }
+        
+        .comment-meta {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            font-size: 14px;
+            color: #696969;
+        }
+        
+        .author {
+            font-weight: bold;
+            color: #1a1a1b;
+        }
+        
+        .score {
+            background-color: #f6f7f8;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        
+        .comment-body {
+            padding: 0 15px 15px;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+        
+        .comment-actions {
+            padding: 0 15px 15px;
+            display: flex;
+            gap: 10px;
+        }
+        
+        .comment-actions button {
+            font-size: 12px;
+            padding: 5px 10px;
+            background-color: #f6f7f8;
+            color: #1a1a1b;
+        }
+        
+        .comment-actions button:hover {
+            background-color: #e1e2e3;
+        }
+        
+        .children {
+            margin-left: 20px;
+            border-left: 2px solid #e1e2e3;
+            padding-left: 10px;
+        }
+        
+        .collapsed .children {
+            display: none;
+        }
+        
+        .collapse-indicator {
+            width: 20px;
+            height: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-color: #f6f7f8;
+            border-radius: 4px;
+            font-weight: bold;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        
+        .collapsed .collapse-indicator::after {
+            content: '+';
+        }
+        
+        .collapse-indicator::after {
+            content: '−';
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #696969;
+        }
+        
+        .error {
+            background-color: #fee;
+            color: #c00;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+        
+        .thread-info {
+            background-color: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .thread-title {
+            font-size: 18px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        
+        @media (max-width: 768px) {
+            .controls {
+                flex-direction: column;
+            }
+            
+            input[type="url"] {
+                min-width: 100%;
+            }
+            
+            .children {
+                margin-left: 10px;
+                padding-left: 5px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Reddit Comment Viewer</h1>
+            
+            <div class="controls">
+                <div class="control-group" style="flex: 1;">
+                    <label for="thread-url">Reddit Thread URL:</label>
+                    <input type="url" id="thread-url" placeholder="https://reddit.com/r/subreddit/comments/..." />
+                </div>
+                
+                <div class="control-group">
+                    <label for="time-filter">Time Range:</label>
+                    <select id="time-filter">
+                        <option value="1">Last Hour</option>
+                        <option value="3">Last 3 Hours</option>
+                        <option value="6">Last 6 Hours</option>
+                        <option value="12">Last 12 Hours</option>
+                        <option value="24" selected>Last 24 Hours</option>
+                        <option value="48">Last 48 Hours</option>
+                        <option value="168">Last Week</option>
+                    </select>
+                </div>
+                
+                <div class="control-group">
+                    <label for="sort-by">Sort By:</label>
+                    <select id="sort-by">
+                        <option value="score">Top (Score)</option>
+                        <option value="time">New (Time)</option>
+                        <option value="controversial">Controversial</option>
+                    </select>
+                </div>
+                
+                <div class="control-group">
+                    <label for="min-score">Min Score:</label>
+                    <input type="number" id="min-score" value="1" min="-100" max="1000" style="width: 80px;" />
+                </div>
+                
+                <div class="control-group" style="justify-content: flex-end;">
+                    <label>&nbsp;</label>
+                    <button id="fetch-btn" onclick="fetchThread()">Fetch Thread</button>
+                </div>
+                
+                <div class="control-group" style="justify-content: flex-end;">
+                    <label>&nbsp;</label>
+                    <button id="refresh-btn" onclick="refreshThread()" style="display: none;">Refresh</button>
+                </div>
+            </div>
+        </header>
+        
+        <div id="thread-info" class="thread-info" style="display: none;">
+            <div class="thread-title"></div>
+            <div class="thread-url"></div>
+        </div>
+        
+        <div id="stats" class="stats" style="display: none;">
+            <div>Total Comments: <span id="total-comments">0</span></div>
+            <div>Last Updated: <span id="last-updated">-</span></div>
+        </div>
+        
+        <div id="loading" class="loading" style="display: none;">
+            Loading comments...
+        </div>
+        
+        <div id="error" class="error" style="display: none;"></div>
+        
+        <div id="comments-container"></div>
+    </div>
+    
+    <script>
+        let currentThreadId = null;
+        let allComments = {};
+        
+        function fetchThread() {
+            const url = document.getElementById('thread-url').value;
+            if (!url) {
+                showError('Please enter a Reddit thread URL');
+                return;
+            }
+            
+            document.getElementById('fetch-btn').disabled = true;
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('error').style.display = 'none';
+            
+            fetch('/fetch_thread', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ thread_url: url })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    showError(data.error);
+                } else {
+                    currentThreadId = data.thread_id;
+                    setTimeout(() => loadComments(), 2000);
+                }
+            })
+            .catch(error => {
+                showError('Failed to fetch thread: ' + error);
+            })
+            .finally(() => {
+                document.getElementById('fetch-btn').disabled = false;
+            });
+        }
+        
+        function refreshThread() {
+            if (!currentThreadId) return;
+            
+            document.getElementById('refresh-btn').disabled = true;
+            
+            fetch(`/refresh_thread/${currentThreadId}`, {
+                method: 'POST'
+            })
+            .then(() => {
+                setTimeout(() => loadComments(), 2000);
+            })
+            .finally(() => {
+                document.getElementById('refresh-btn').disabled = false;
+            });
+        }
+        
+        function loadComments() {
+            if (!currentThreadId) return;
+            
+            const hours = document.getElementById('time-filter').value;
+            const sortBy = document.getElementById('sort-by').value;
+            const minScore = document.getElementById('min-score').value;
+            
+            document.getElementById('loading').style.display = 'block';
+            
+            fetch(`/get_comments/${currentThreadId}?hours=${hours}&sort=${sortBy}&min_score=${minScore}`)
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    showError(data.error);
+                } else {
+                    displayComments(data);
+                    document.getElementById('refresh-btn').style.display = 'inline-block';
+                }
+            })
+            .catch(error => {
+                showError('Failed to load comments: ' + error);
+            })
+            .finally(() => {
+                document.getElementById('loading').style.display = 'none';
+            });
+        }
+        
+        function displayComments(data) {
+            // Update thread info
+            if (data.thread_info) {
+                document.getElementById('thread-info').style.display = 'block';
+                document.querySelector('.thread-title').textContent = data.thread_info.title;
+                document.querySelector('.thread-url').innerHTML = `<a href="${data.thread_info.url}" target="_blank">${data.thread_info.url}</a>`;
+            }
+            
+            // Update stats
+            document.getElementById('stats').style.display = 'block';
+            document.getElementById('total-comments').textContent = data.total_comments;
+            document.getElementById('last-updated').textContent = new Date().toLocaleString();
+            
+            // Clear and store all comments
+            allComments = {};
+            storeCommentsFlat(data.comments);
+            
+            // Display comments
+            const container = document.getElementById('comments-container');
+            container.innerHTML = '';
+            
+            data.comments.forEach(comment => {
+                container.appendChild(createCommentElement(comment));
+            });
+        }
+        
+        function storeCommentsFlat(comments) {
+            comments.forEach(comment => {
+                allComments[comment.id] = comment;
+                if (comment.children && comment.children.length > 0) {
+                    storeCommentsFlat(comment.children);
+                }
+            });
+        }
+        
+        function createCommentElement(comment) {
+            const div = document.createElement('div');
+            div.className = 'comment';
+            div.id = `comment-${comment.id}`;
+            
+            const header = document.createElement('div');
+            header.className = 'comment-header';
+            header.onclick = () => toggleCollapse(comment.id);
+            
+            const meta = document.createElement('div');
+            meta.className = 'comment-meta';
+            
+            const collapseIndicator = document.createElement('div');
+            collapseIndicator.className = 'collapse-indicator';
+            
+            const author = document.createElement('span');
+            author.className = 'author';
+            author.textContent = comment.author;
+            
+            const score = document.createElement('span');
+            score.className = 'score';
+            score.textContent = `${comment.score} points`;
+            
+            const time = document.createElement('span');
+            time.textContent = timeAgo(comment.created_utc);
+            
+            meta.appendChild(collapseIndicator);
+            meta.appendChild(author);
+            meta.appendChild(score);
+            meta.appendChild(time);
+            
+            header.appendChild(meta);
+            
+            const body = document.createElement('div');
+            body.className = 'comment-body';
+            body.innerHTML = formatCommentBody(comment.body);
+            
+            const actions = document.createElement('div');
+            actions.className = 'comment-actions';
+            
+            const permalinkBtn = document.createElement('button');
+            permalinkBtn.textContent = 'Permalink';
+            permalinkBtn.onclick = (e) => {
+                e.stopPropagation();
+                window.open(`https://reddit.com${comment.permalink}`, '_blank');
+            };
+            
+            actions.appendChild(permalinkBtn);
+            
+            if (!comment.is_root) {
+                const parentBtn = document.createElement('button');
+                parentBtn.textContent = 'Go to Parent';
+                parentBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    scrollToComment(comment.parent_id);
+                };
+                actions.appendChild(parentBtn);
+                
+                const rootBtn = document.createElement('button');
+                rootBtn.textContent = 'Go to Root';
+                rootBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    scrollToRoot(comment.id);
+                };
+                actions.appendChild(rootBtn);
+            }
+            
+            div.appendChild(header);
+            div.appendChild(body);
+            div.appendChild(actions);
+            
+            if (comment.children && comment.children.length > 0) {
+                const children = document.createElement('div');
+                children.className = 'children';
+                
+                comment.children.forEach(child => {
+                    children.appendChild(createCommentElement(child));
+                });
+                
+                div.appendChild(children);
+            }
+            
+            return div;
+        }
+        
+        function formatCommentBody(body) {
+            // Basic markdown formatting
+            return body
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/\n/g, '<br>')
+                .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                .replace(/\*(.*?)\*/g, '<em>$1</em>')
+                .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+        }
+        
+        function toggleCollapse(commentId) {
+            const element = document.getElementById(`comment-${commentId}`);
+            if (element) {
+                element.classList.toggle('collapsed');
+            }
+        }
+        
+        function scrollToComment(commentId) {
+            const element = document.getElementById(`comment-${commentId}`);
+            if (element) {
+                element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                element.style.backgroundColor = '#fff3cd';
+                setTimeout(() => {
+                    element.style.backgroundColor = '';
+                }, 2000);
+            }
+        }
+        
+        function scrollToRoot(commentId) {
+            let current = allComments[commentId];
+            while (current && current.parent_id) {
+                current = allComments[current.parent_id];
+            }
+            if (current) {
+                scrollToComment(current.id);
+            }
+        }
+        
+        function timeAgo(timestamp) {
+            const now = Date.now() / 1000;
+            const diff = now - timestamp;
+            
+            if (diff < 60) return `${Math.floor(diff)} seconds ago`;
+            if (diff < 3600) return `${Math.floor(diff/60)} minutes ago`;
+            if (diff < 86400) return `${Math.floor(diff/3600)} hours ago`;
+            return `${Math.floor(diff/86400)} days ago`;
+        }
+        
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+            document.getElementById('loading').style.display = 'none';
+        }
+        
+        // Add event listeners
+        document.getElementById('time-filter').addEventListener('change', loadComments);
+        document.getElementById('sort-by').addEventListener('change', loadComments);
+        document.getElementById('min-score').addEventListener('change', loadComments);
+        
+        // Allow Enter key to fetch thread
+        document.getElementById('thread-url').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                fetchThread();
+            }
+        });
+    </script>
+</body>
+</html>

@@ -139,6 +139,15 @@
             word-wrap: break-word;
         }
         
+        .comment-body a {
+            color: #0079d3;
+            text-decoration: none;
+        }
+        
+        .comment-body a:hover {
+            text-decoration: underline;
+        }
+        
         .comment-actions {
             padding: 0 15px 15px;
             display: flex;
@@ -162,8 +171,30 @@
             padding-left: 10px;
         }
         
+        .collapsed .comment-body,
+        .collapsed .comment-actions,
         .collapsed .children {
             display: none;
+        }
+        
+        .comment-snippet {
+            display: none;
+            color: #696969;
+            font-size: 13px;
+            padding: 0 15px 10px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 600px;
+        }
+        
+        .collapsed .comment-snippet {
+            display: block;
+        }
+        
+        .collapsed .comment-header {
+            opacity: 0.8;
+            font-style: italic;
         }
         
         .collapse-indicator {
@@ -185,6 +216,11 @@
         
         .collapse-indicator::after {
             content: '−';
+        }
+        
+        .collapsed .collapse-indicator[data-count]::after {
+            content: '+' attr(data-count);
+            font-size: 11px;
         }
         
         .loading {
@@ -215,6 +251,44 @@
             margin-bottom: 10px;
         }
         
+        .media-container {
+            margin-top: 10px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        
+        .media-item {
+            max-width: 100%;
+        }
+        
+        .media-item img {
+            max-width: 100%;
+            max-height: 400px;
+            object-fit: contain;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        
+        .media-item img:hover {
+            transform: scale(1.02);
+        }
+        
+        .video-link {
+            display: inline-block;
+            padding: 8px 16px;
+            background-color: #0079d3;
+            color: white;
+            text-decoration: none;
+            border-radius: 4px;
+            transition: background-color 0.2s;
+        }
+        
+        .video-link:hover {
+            background-color: #0060a8;
+        }
+        
         @media (max-width: 768px) {
             .controls {
                 flex-direction: column;
@@ -227,6 +301,14 @@
             .children {
                 margin-left: 10px;
                 padding-left: 5px;
+            }
+            
+            .media-item img {
+                max-height: 250px;
+            }
+            
+            .comment-snippet {
+                max-width: 100%;
             }
         }
     </style>
@@ -474,9 +556,21 @@
             
             header.appendChild(meta);
             
+            // Add comment snippet for collapsed view
+            const snippet = document.createElement('div');
+            snippet.className = 'comment-snippet';
+            const plainText = comment.body.replace(/\n/g, ' ').substring(0, 100);
+            snippet.textContent = plainText + (comment.body.length > 100 ? '...' : '');
+            
             const body = document.createElement('div');
             body.className = 'comment-body';
             body.innerHTML = formatCommentBody(comment.body);
+            
+            // Add click handlers for images
+            body.querySelectorAll('.media-item img').forEach(img => {
+                img.onclick = () => window.open(img.src, '_blank');
+                img.style.cursor = 'pointer';
+            });
             
             const actions = document.createElement('div');
             actions.className = 'comment-actions';
@@ -509,6 +603,7 @@
             }
             
             div.appendChild(header);
+            div.appendChild(snippet);
             div.appendChild(body);
             div.appendChild(actions);
             
@@ -527,21 +622,80 @@
         }
         
         function formatCommentBody(body) {
-            // Basic markdown formatting
-            return body
+            // First, escape HTML
+            let formatted = body
                 .replace(/&/g, '&amp;')
                 .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
+                .replace(/>/g, '&gt;');
+            
+            // Process URLs and media before other formatting
+            const urlRegex = /(https?:\/\/[^\s\[\]()<>]+?)(?=[.,!?;:]?(?:\s|$|\[|\]|\(|\)|<|>))/g;
+            const mediaUrls = [];
+            
+            formatted = formatted.replace(urlRegex, (url) => {
+                const cleanUrl = url.trim();
+                
+                // Check if it's a Reddit media URL or image
+                if (cleanUrl.match(/\.(jpg|jpeg|png|gif|gifv|webp)$/i) || 
+                    cleanUrl.includes('preview.redd.it') || 
+                    cleanUrl.includes('i.redd.it') ||
+                    cleanUrl.includes('i.imgur.com')) {
+                    // For gifv, convert to gif
+                    const embedUrl = cleanUrl.replace(/\.gifv$/i, '.gif');
+                    mediaUrls.push(embedUrl);
+                    return `<a href="${cleanUrl}" target="_blank">${cleanUrl}</a>`;
+                } else if (cleanUrl.includes('v.redd.it') || cleanUrl.includes('imgur.com/a/')) {
+                    // Video content or imgur album
+                    mediaUrls.push({url: cleanUrl, type: 'video'});
+                    return `<a href="${cleanUrl}" target="_blank">${cleanUrl}</a>`;
+                } else if (cleanUrl.includes('reddit.com/gallery/')) {
+                    // Gallery link
+                    return `<a href="${cleanUrl}" target="_blank">${cleanUrl}</a> (Gallery)`;
+                } else {
+                    // Regular link
+                    return `<a href="${cleanUrl}" target="_blank">${cleanUrl}</a>`;
+                }
+            });
+            
+            // Apply other formatting
+            formatted = formatted
                 .replace(/\n/g, '<br>')
                 .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
                 .replace(/\*(.*?)\*/g, '<em>$1</em>')
                 .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+            
+            // Add media embeds at the end
+            if (mediaUrls.length > 0) {
+                formatted += '<div class="media-container">';
+                mediaUrls.forEach(media => {
+                    if (typeof media === 'string') {
+                        // Image
+                        formatted += `<div class="media-item"><img src="${media}" alt="Reddit media" loading="lazy" /></div>`;
+                    } else if (media.type === 'video') {
+                        // Video (v.redd.it videos need special handling)
+                        formatted += `<div class="media-item"><a href="${media.url}" target="_blank" class="video-link">📹 View video on Reddit</a></div>`;
+                    }
+                });
+                formatted += '</div>';
+            }
+            
+            return formatted;
         }
         
         function toggleCollapse(commentId) {
             const element = document.getElementById(`comment-${commentId}`);
             if (element) {
                 element.classList.toggle('collapsed');
+                
+                // Update collapse indicator with child count
+                const indicator = element.querySelector('.collapse-indicator');
+                const childCount = element.querySelectorAll('.children .comment').length;
+                
+                if (element.classList.contains('collapsed') && childCount > 0) {
+                    indicator.setAttribute('data-count', `(${childCount})`);
+                } else {
+                    indicator.removeAttribute('data-count');
+                }
             }
         }
         

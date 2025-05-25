@@ -8,8 +8,18 @@ import sqlite3
 from threading import Thread, Lock
 import json
 from collections import defaultdict
+import traceback
 
 app = Flask(__name__)
+
+# Error handler for JSON responses
+@app.errorhandler(500)
+def handle_500_error(error):
+    """Return JSON instead of HTML for HTTP errors."""
+    return jsonify({
+        'error': 'Internal server error',
+        'message': 'An error occurred processing your request'
+    }), 500
 
 # Reddit API credentials - set these as environment variables
 REDDIT_CLIENT_ID = os.environ.get('REDDIT_CLIENT_ID', 'your_client_id')
@@ -76,7 +86,8 @@ def fetch_comments(thread_id, force_refresh=False):
         
         try:
             submission = reddit.submission(id=thread_id)
-            submission.comments.replace_more(limit=None)
+            # Replace more comments - limit to avoid timeouts on huge threads
+            submission.comments.replace_more(limit=32)
             
             # Store thread info
             c.execute('''
@@ -146,48 +157,78 @@ def get_comments_filtered(thread_id, hours=24, sort_by='score', min_score=1):
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
         
-        # Calculate time threshold
-        time_threshold = int(time.time()) - (hours * 3600)
-        
-        # Build query based on sort criteria
-        base_query = '''
-            SELECT * FROM comments 
-            WHERE thread_id = ? 
-            AND created_utc >= ?
-            AND score >= ?
-        '''
-        
-        if sort_by == 'score':
-            query = base_query + ' ORDER BY score DESC, created_utc DESC'
-        elif sort_by == 'time':
-            query = base_query + ' ORDER BY created_utc DESC'
-        elif sort_by == 'controversial':
-            # Simple controversial: low score but high activity (replies)
-            query = base_query + ' ORDER BY score ASC, created_utc DESC'
-        else:
-            query = base_query + ' ORDER BY score DESC'
-        
-        c.execute(query, (thread_id, time_threshold, min_score))
-        comments = [dict(row) for row in c.fetchall()]
-        
-        # Get thread info
-        c.execute('SELECT * FROM threads WHERE id = ?', (thread_id,))
-        thread_info = dict(c.fetchone()) if c.fetchone() else None
-        
-        conn.close()
-        return comments, thread_info
+        try:
+            # Calculate time threshold
+            time_threshold = int(time.time()) - (hours * 3600)
+            
+            # Build query based on sort criteria
+            base_query = '''
+                SELECT * FROM comments 
+                WHERE thread_id = ? 
+                AND created_utc >= ?
+                AND score >= ?
+            '''
+            
+            if sort_by == 'score':
+                query = base_query + ' ORDER BY score DESC, created_utc DESC'
+            elif sort_by == 'time':
+                query = base_query + ' ORDER BY created_utc DESC'
+            elif sort_by == 'controversial':
+                # Simple controversial: low score but high activity (replies)
+                query = base_query + ' ORDER BY score ASC, created_utc DESC'
+            else:
+                query = base_query + ' ORDER BY score DESC'
+            
+            c.execute(query, (thread_id, time_threshold, min_score))
+            rows = c.fetchall()
+            comments = []
+            for row in rows:
+                comment = dict(row)
+                # Ensure boolean conversion
+                comment['is_root'] = bool(comment['is_root'])
+                comments.append(comment)
+            
+            # Get thread info
+            c.execute('SELECT * FROM threads WHERE id = ?', (thread_id,))
+            thread_row = c.fetchone()
+            thread_info = dict(thread_row) if thread_row else None
+            
+            return comments, thread_info
+        except Exception as e:
+            print(f"Error in get_comments_filtered: {str(e)}")
+            raise
+        finally:
+            conn.close()
 
 def build_comment_tree(comments):
     """Build a tree structure from flat comment list"""
-    comment_dict = {c['id']: c for c in comments}
-    roots = []
+    if not comments:
+        return []
     
+    # First, initialize all comments with empty children arrays
+    comment_dict = {}
     for comment in comments:
         comment['children'] = []
+        comment_dict[comment['id']] = comment
+    
+    roots = []
+    orphaned = []
+    
+    # Now build the tree structure
+    for comment in comments:
         if comment['is_root']:
             roots.append(comment)
         elif comment['parent_id'] in comment_dict:
+            # Parent exists in filtered set
             comment_dict[comment['parent_id']]['children'].append(comment)
+        else:
+            # Parent was filtered out, treat as orphaned root
+            orphaned.append(comment)
+    
+    # Add orphaned comments as roots with a special indicator
+    for comment in orphaned:
+        comment['is_orphaned'] = True
+        roots.append(comment)
     
     return roots
 
@@ -220,23 +261,28 @@ def fetch_thread():
 @app.route('/get_comments/<thread_id>')
 def get_comments(thread_id):
     """Get filtered comments for a thread"""
-    hours = int(request.args.get('hours', 24))
-    sort_by = request.args.get('sort', 'score')
-    min_score = int(request.args.get('min_score', 1))
-    
-    comments, thread_info = get_comments_filtered(thread_id, hours, sort_by, min_score)
-    
-    if not thread_info:
-        return jsonify({'error': 'Thread not found'}), 404
-    
-    # Build comment tree
-    comment_tree = build_comment_tree(comments)
-    
-    return jsonify({
-        'thread_info': thread_info,
-        'comments': comment_tree,
-        'total_comments': len(comments)
-    })
+    try:
+        hours = int(request.args.get('hours', 24))
+        sort_by = request.args.get('sort', 'score')
+        min_score = int(request.args.get('min_score', 1))
+        
+        comments, thread_info = get_comments_filtered(thread_id, hours, sort_by, min_score)
+        
+        if not thread_info:
+            return jsonify({'error': 'Thread not found'}), 404
+        
+        # Build comment tree
+        comment_tree = build_comment_tree(comments)
+        
+        return jsonify({
+            'thread_info': thread_info,
+            'comments': comment_tree,
+            'total_comments': len(comments)
+        })
+    except Exception as e:
+        print(f"Error in get_comments: {str(e)}")
+        traceback.print_exc()
+        return jsonify({'error': f'Failed to load comments: {str(e)}'}), 500
 
 @app.route('/refresh_thread/<thread_id>', methods=['POST'])
 def refresh_thread(thread_id):
@@ -266,4 +312,4 @@ def time_ago(timestamp):
 
 if __name__ == '__main__':
     init_db()
-    app.run(debug=True, host='0.0.0.0', port=8080)
+    app.run(debug=True, host='0.0.0.0', port=5000)

@@ -322,17 +322,23 @@
                 },
                 body: JSON.stringify({ thread_url: url })
             })
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.error) {
                     showError(data.error);
                 } else {
                     currentThreadId = data.thread_id;
+                    document.getElementById('loading').textContent = 'Fetching comments from Reddit (this may take 30-60 seconds for large threads)...';
                     setTimeout(() => loadComments(), 2000);
                 }
             })
             .catch(error => {
-                showError('Failed to fetch thread: ' + error);
+                showError('Failed to fetch thread: ' + error.message);
             })
             .finally(() => {
                 document.getElementById('fetch-btn').disabled = false;
@@ -365,7 +371,12 @@
             document.getElementById('loading').style.display = 'block';
             
             fetch(`/get_comments/${currentThreadId}?hours=${hours}&sort=${sortBy}&min_score=${minScore}`)
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
             .then(data => {
                 if (data.error) {
                     showError(data.error);
@@ -375,7 +386,7 @@
                 }
             })
             .catch(error => {
-                showError('Failed to load comments: ' + error);
+                showError('Failed to load comments: ' + error.message);
             })
             .finally(() => {
                 document.getElementById('loading').style.display = 'none';
@@ -403,9 +414,13 @@
             const container = document.getElementById('comments-container');
             container.innerHTML = '';
             
-            data.comments.forEach(comment => {
-                container.appendChild(createCommentElement(comment));
-            });
+            if (data.comments.length === 0) {
+                container.innerHTML = '<div class="loading">No comments found matching your filters. Try adjusting the time range or minimum score.</div>';
+            } else {
+                data.comments.forEach(comment => {
+                    container.appendChild(createCommentElement(comment));
+                });
+            }
         }
         
         function storeCommentsFlat(comments) {
@@ -448,6 +463,15 @@
             meta.appendChild(score);
             meta.appendChild(time);
             
+            // Add orphaned indicator if needed
+            if (comment.is_orphaned) {
+                const orphanedSpan = document.createElement('span');
+                orphanedSpan.style.color = '#7c7c7d';
+                orphanedSpan.style.fontSize = '12px';
+                orphanedSpan.textContent = '(parent filtered out)';
+                meta.appendChild(orphanedSpan);
+            }
+            
             header.appendChild(meta);
             
             const body = document.createElement('div');
@@ -466,7 +490,7 @@
             
             actions.appendChild(permalinkBtn);
             
-            if (!comment.is_root) {
+            if (!comment.is_root || comment.is_orphaned) {
                 const parentBtn = document.createElement('button');
                 parentBtn.textContent = 'Go to Parent';
                 parentBtn.onclick = (e) => {

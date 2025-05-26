@@ -3,6 +3,7 @@ import time
 import datetime
 from flask import Flask, render_template, request, jsonify
 import praw
+from praw.models import Submission
 from prawcore import NotFound
 import sqlite3
 from threading import Thread, Lock
@@ -85,9 +86,15 @@ def fetch_comments(thread_id, force_refresh=False):
                 return
         
         try:
-            submission = reddit.submission(id=thread_id)
+            submission: Submission = reddit.submission(id=thread_id)
             # Replace more comments - limit to avoid timeouts on huge threads
-            submission.comments.replace_more(limit=32)
+            while True:
+                try:
+                    submission.comments.replace_more(limit=32)
+                    break
+                except Exception as e:
+                    print(f"Error replacing more comments: {e}")
+                    time.sleep(1)
             
             # Store thread info
             c.execute('''

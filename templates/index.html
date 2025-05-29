@@ -429,6 +429,11 @@
                     <label>&nbsp;</label>
                     <button id="refresh-btn" onclick="refreshThread()" style="display: none;">Refresh</button>
                 </div>
+                
+                <div class="control-group" style="justify-content: flex-end;">
+                    <label>&nbsp;</label>
+                    <button id="health-check-btn" onclick="checkHealth()" style="background-color: #28a745;">API Test</button>
+                </div>
             </div>
         </header>
         
@@ -514,16 +519,17 @@
             .then(data => {
                 if (data.error) {
                     showError(data.error);
+                    document.getElementById('fetch-btn').disabled = false;
                 } else {
                     currentThreadId = data.thread_id;
-                    document.getElementById('loading').textContent = 'Fetching comments from Reddit (this may take 30-60 seconds for large threads)...';
-                    setTimeout(() => loadComments(), 2000);
+                    pollCount = 0; // Reset poll counter for new fetch
+                    document.getElementById('loading').textContent = 'Starting to fetch comments from Reddit...';
+                    // Wait a bit longer before starting to poll to ensure background thread is running
+                    setTimeout(() => pollThreadStatus(), 1000);
                 }
             })
             .catch(error => {
                 showError('Failed to fetch thread: ' + error.message);
-            })
-            .finally(() => {
                 document.getElementById('fetch-btn').disabled = false;
             });
         }
@@ -532,15 +538,93 @@
             if (!currentThreadId) return;
             
             document.getElementById('refresh-btn').disabled = true;
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('loading').textContent = 'Starting refresh...';
+            document.getElementById('error').style.display = 'none';
             
             fetch(`/refresh_thread/${currentThreadId}`, {
                 method: 'POST'
             })
-            .then(() => {
-                setTimeout(() => loadComments(), 2000);
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
             })
-            .finally(() => {
+            .then(data => {
+                if (data.error) {
+                    showError(data.error);
+                    document.getElementById('refresh-btn').disabled = false;
+                    document.getElementById('loading').style.display = 'none';
+                } else {
+                    pollCount = 0; // Reset poll counter for refresh
+                    document.getElementById('loading').textContent = 'Refreshing comments from Reddit...';
+                    // Wait before starting to poll to ensure background thread is running
+                    setTimeout(() => pollThreadStatus(), 1000);
+                }
+            })
+            .catch(error => {
+                showError('Failed to refresh thread: ' + error.message);
                 document.getElementById('refresh-btn').disabled = false;
+                document.getElementById('loading').style.display = 'none';
+            });
+        }
+        
+        let pollCount = 0;
+        const MAX_POLLS = 40; // 40 polls * 3 seconds = 2 minutes max
+        
+        function pollThreadStatus() {
+            if (!currentThreadId) return;
+            
+            pollCount++;
+            console.log(`Polling thread status for: ${currentThreadId} (attempt ${pollCount}/${MAX_POLLS})`);
+            
+            fetch(`/thread_status/${currentThreadId}`)
+            .then(response => response.json())
+            .then(data => {
+                console.log('Thread status:', data);
+                const loadingDiv = document.getElementById('loading');
+                
+                if (data.status === 'fetching') {
+                    // Still fetching, continue polling (with timeout)
+                    if (pollCount >= MAX_POLLS) {
+                        console.log('Polling timeout reached, trying to load comments anyway');
+                        loadingDiv.textContent = 'Polling timeout - attempting to load comments...';
+                        setTimeout(() => loadComments(), 1000);
+                        return;
+                    }
+                    
+                    loadingDiv.textContent = `Fetching comments from Reddit... (${Math.floor((pollCount * 3) / 60)}m ${(pollCount * 3) % 60}s)`;
+                    setTimeout(pollThreadStatus, 3000); // Poll every 3 seconds
+                } else if (data.status === 'success') {
+                    // Fetching completed successfully, load comments
+                    console.log('Status is success, loading comments');
+                    loadingDiv.textContent = 'Processing comments...';
+                    pollCount = 0; // Reset counter
+                    setTimeout(() => loadComments(), 500);
+                } else if (data.status === 'error') {
+                    // Fetching failed
+                    console.log('Status is error:', data.error);
+                    showError(data.error || 'Unknown error occurred while fetching comments');
+                    document.getElementById('fetch-btn').disabled = false;
+                    document.getElementById('refresh-btn').disabled = false;
+                    document.getElementById('loading').style.display = 'none';
+                    pollCount = 0; // Reset counter
+                } else {
+                    // Unknown status - might be a new thread, keep polling for a bit
+                    console.log('Unknown status, continuing to poll:', data.status);
+                    loadingDiv.textContent = 'Initializing fetch process...';
+                    setTimeout(pollThreadStatus, 2000);
+                }
+            })
+            .catch(error => {
+                console.error('Error polling thread status:', error);
+                // If polling fails, fall back to trying to load comments after a delay
+                setTimeout(() => {
+                    console.log('Polling failed, attempting to load comments anyway');
+                    pollCount = 0; // Reset counter
+                    loadComments();
+                }, 5000);
             });
         }
         
@@ -552,11 +636,14 @@
             const minScore = document.getElementById('min-score').value;
             
             document.getElementById('loading').style.display = 'block';
+            document.getElementById('loading').textContent = 'Loading comments...';
             
             fetch(`/get_comments/${currentThreadId}?hours=${hours}&sort=${sortBy}&min_score=${minScore}`)
             .then(response => {
                 if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
+                    return response.json().then(errorData => {
+                        throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+                    });
                 }
                 return response.json();
             })
@@ -566,10 +653,46 @@
                 } else {
                     displayComments(data);
                     document.getElementById('refresh-btn').style.display = 'inline-block';
+                    document.getElementById('fetch-btn').disabled = false;
+                    document.getElementById('refresh-btn').disabled = false;
+                    
+                    // Show helpful message if no comments found
+                    if (data.total_comments === 0) {
+                        const container = document.getElementById('comments-container');
+                        const fetchStatus = data.fetch_status || 'unknown';
+                        
+                        if (fetchStatus === 'success') {
+                            container.innerHTML = `
+                                <div class="loading">
+                                    <p><strong>No comments found matching your filters.</strong></p>
+                                    <p>This could mean:</p>
+                                    <ul style="text-align: left; margin-top: 10px;">
+                                        <li>No comments were posted in the selected time range</li>
+                                        <li>All comments have scores below your minimum threshold (${minScore})</li>
+                                        <li>The thread might be very new or has been removed</li>
+                                    </ul>
+                                    <p style="margin-top: 15px;">
+                                        <strong>Try:</strong> Expanding the time range, lowering the minimum score, or checking the original Reddit thread.
+                                    </p>
+                                </div>
+                            `;
+                        } else {
+                            container.innerHTML = `
+                                <div class="loading">
+                                    <p><strong>Comments may still be loading...</strong></p>
+                                    <p>Thread status: ${fetchStatus}</p>
+                                    <p>Try refreshing in a few moments or check the original Reddit thread.</p>
+                                </div>
+                            `;
+                        }
+                    }
                 }
             })
             .catch(error => {
+                console.error('Load comments error:', error);
                 showError('Failed to load comments: ' + error.message);
+                document.getElementById('fetch-btn').disabled = false;
+                document.getElementById('refresh-btn').disabled = false;
             })
             .finally(() => {
                 document.getElementById('loading').style.display = 'none';
@@ -597,13 +720,13 @@
             const container = document.getElementById('comments-container');
             container.innerHTML = '';
             
-            if (data.comments.length === 0) {
-                container.innerHTML = '<div class="loading">No comments found matching your filters. Try adjusting the time range or minimum score.</div>';
-            } else {
+            // Only show the simple no comments message if we have comments to display
+            if (data.comments.length > 0) {
                 data.comments.forEach(comment => {
                     container.appendChild(createCommentElement(comment));
                 });
             }
+            // Note: The detailed no-comments message is now handled in loadComments()
         }
         
         function storeCommentsFlat(comments) {
@@ -833,9 +956,71 @@
         
         function showError(message) {
             const errorDiv = document.getElementById('error');
-            errorDiv.textContent = message;
+            
+            // Create retry button for certain types of errors
+            let retryButton = '';
+            if (message.includes('rate limit') || message.includes('API') || message.includes('network') || message.includes('timeout')) {
+                retryButton = `<br><br><button onclick="retryFetch()" style="margin-top: 10px; padding: 8px 16px; background-color: var(--accent-color); color: white; border: none; border-radius: 4px; cursor: pointer;">Retry</button>`;
+            }
+            
+            errorDiv.innerHTML = `
+                <strong>Error:</strong> ${message}
+                ${retryButton}
+            `;
             errorDiv.style.display = 'block';
             document.getElementById('loading').style.display = 'none';
+        }
+        
+        function retryFetch() {
+            document.getElementById('error').style.display = 'none';
+            if (currentThreadId) {
+                // If we have a thread ID, try refreshing
+                refreshThread();
+            } else {
+                // Otherwise try fetching again
+                fetchThread();
+            }
+        }
+        
+        function checkHealth() {
+            const healthBtn = document.getElementById('health-check-btn');
+            const originalText = healthBtn.textContent;
+            
+            healthBtn.disabled = true;
+            healthBtn.textContent = 'Testing...';
+            
+            fetch('/health_check')
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'healthy') {
+                    showSuccess(`✅ Reddit API is working! Client ID: ${data.client_id || 'unknown'}`);
+                } else {
+                    showError(`❌ Reddit API Error: ${data.message}`);
+                }
+            })
+            .catch(error => {
+                showError(`❌ Health check failed: ${error.message}`);
+            })
+            .finally(() => {
+                healthBtn.disabled = false;
+                healthBtn.textContent = originalText;
+            });
+        }
+        
+        function showSuccess(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.innerHTML = message;
+            errorDiv.style.backgroundColor = '#d4edda';
+            errorDiv.style.color = '#155724';
+            errorDiv.style.borderColor = '#c3e6cb';
+            errorDiv.style.display = 'block';
+            
+            // Reset to error colors after 5 seconds
+            setTimeout(() => {
+                errorDiv.style.backgroundColor = '';
+                errorDiv.style.color = '';
+                errorDiv.style.borderColor = '';
+            }, 5000);
         }
         
         // Add event listeners

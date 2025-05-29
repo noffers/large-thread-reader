@@ -114,7 +114,9 @@ def update_thread_status(thread_id, status, error_message=None):
 
 def fetch_comments(thread_id, force_refresh=False):
     """Fetch all comments from a Reddit thread with enhanced error handling"""
+    # Set status to fetching IMMEDIATELY
     update_thread_status(thread_id, 'fetching')
+    logger.info(f"Status set to 'fetching' for thread {thread_id}")
     
     with db_lock:
         conn = sqlite3.connect(DB_PATH)
@@ -128,6 +130,7 @@ def fetch_comments(thread_id, force_refresh=False):
             last_fetched = result[0]
             # If fetched within last 5 minutes, use cache
             if time.time() - last_fetched < 300:
+                logger.info(f"Using cached data for thread {thread_id}")
                 update_thread_status(thread_id, 'success')
                 conn.close()
                 return
@@ -277,7 +280,10 @@ def fetch_comments(thread_id, force_refresh=False):
                 
                 conn.commit()
                 logger.info(f"Successfully stored {len(comments_data)} comments for thread {thread_id}")
+                
+                # CRITICAL: Update status to success AFTER successful database commit
                 update_thread_status(thread_id, 'success')
+                logger.info(f"Status updated to 'success' for thread {thread_id}")
                 
             except Exception as e:
                 error_msg = f"Database error: {str(e)}"
@@ -382,14 +388,14 @@ def build_comment_tree(comments):
 def health_check():
     """Health check endpoint to test Reddit API connectivity"""
     try:
-        # Test basic Reddit API access with a known working submission
-        test_submission = reddit.submission(id='test')
-        _ = test_submission.title  # This will test if we can make API calls
+        # Test with a real Reddit post that should exist
+        test_submission = reddit.submission(id='3hahrw')  # A well-known test post
+        title = test_submission.title  # This will test if we can make API calls
         
         return jsonify({
             'status': 'healthy',
             'reddit_api': 'connected',
-            'message': 'Reddit API credentials are working',
+            'message': f'Reddit API credentials are working. Test post: "{title[:50]}..."',
             'client_id': REDDIT_CLIENT_ID[:8] + '...' if len(REDDIT_CLIENT_ID) > 8 else 'not_set'
         })
     except Forbidden:
@@ -428,10 +434,54 @@ def fetch_thread():
     if not thread_id:
         return jsonify({'error': 'Invalid thread URL'}), 400
     
+    # Set status to fetching BEFORE starting the thread
+    update_thread_status(thread_id, 'fetching')
+    logger.info(f"Set status to 'fetching' for thread {thread_id} before starting background thread")
+    
     # Start fetching in background
     Thread(target=fetch_comments, args=(thread_id, True)).start()
     
     return jsonify({'thread_id': thread_id, 'status': 'fetching'})
+
+@app.route('/debug_thread/<thread_id>')
+def debug_thread(thread_id):
+    """Debug endpoint to check thread state"""
+    try:
+        with db_lock:
+            conn = sqlite3.connect(DB_PATH)
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            
+            # Get thread info
+            c.execute('SELECT * FROM threads WHERE id = ?', (thread_id,))
+            thread_row = c.fetchone()
+            thread_info = dict(thread_row) if thread_row else None
+            
+            # Get comment count
+            c.execute('SELECT COUNT(*) as comment_count FROM comments WHERE thread_id = ?', (thread_id,))
+            count_row = c.fetchone()
+            comment_count = count_row['comment_count'] if count_row else 0
+            
+            # Get sample comments
+            c.execute('SELECT id, author, score, created_utc FROM comments WHERE thread_id = ? LIMIT 5', (thread_id,))
+            sample_comments = [dict(row) for row in c.fetchall()]
+            
+            conn.close()
+            
+            # Get in-memory status
+            with status_lock:
+                memory_status = thread_status.get(thread_id, {'status': 'not_found'})
+            
+            return jsonify({
+                'thread_id': thread_id,
+                'thread_info': thread_info,
+                'comment_count': comment_count,
+                'sample_comments': sample_comments,
+                'memory_status': memory_status
+            })
+            
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/thread_status/<thread_id>')
 def get_thread_status(thread_id):
@@ -459,6 +509,16 @@ def get_thread_status(thread_id):
                 # Combine in-memory and database status
                 if status_info['status'] == 'unknown' and db_status['status'] != 'unknown':
                     status_info = db_status
+                elif status_info['status'] == 'fetching' and db_status['status'] == 'success':
+                    # Database shows success but memory shows fetching - update memory
+                    logger.info(f"Syncing status: DB shows success for {thread_id}, updating memory")
+                    with status_lock:
+                        thread_status[thread_id] = {
+                            'status': 'success',
+                            'error': None,
+                            'timestamp': time.time()
+                        }
+                    status_info = {'status': 'success', 'error': None, 'timestamp': time.time()}
                 
     except Exception as e:
         logger.error(f"Error getting thread status: {e}")
@@ -500,8 +560,12 @@ def get_comments(thread_id):
 @app.route('/refresh_thread/<thread_id>', methods=['POST'])
 def refresh_thread(thread_id):
     """Refresh comments for a thread"""
+    # Set status to fetching BEFORE starting the thread
+    update_thread_status(thread_id, 'fetching')
+    logger.info(f"Set status to 'fetching' for thread {thread_id} before starting refresh")
+    
     Thread(target=fetch_comments, args=(thread_id, True)).start()
-    return jsonify({'status': 'refreshing'})
+    return jsonify({'status': 'fetching'})
 
 @app.template_filter('format_time')
 def format_time(timestamp):

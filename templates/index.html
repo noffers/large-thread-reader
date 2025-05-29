@@ -5,6 +5,40 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Reddit Comment Viewer</title>
     <style>
+        :root {
+            --bg-primary: #f6f7f8;
+            --bg-secondary: #fff;
+            --text-primary: #1a1a1b;
+            --text-secondary: #696969;
+            --border-color: #ddd;
+            --accent-color: #0079d3;
+            --accent-hover: #0060a8;
+            --shadow: rgba(0,0,0,0.1);
+            --highlight-bg: #f6f7f8;
+            --highlight-hover: #e1e2e3;
+            --error-bg: #fee;
+            --error-text: #c00;
+            --score-bg: #f6f7f8;
+            --collapse-border: #e1e2e3;
+        }
+
+        [data-theme="dark"] {
+            --bg-primary: #1a1a1b;
+            --bg-secondary: #272729;
+            --text-primary: #d7dadc;
+            --text-secondary: #818384;
+            --border-color: #343536;
+            --accent-color: #4fbcff;
+            --accent-hover: #6ab7db;
+            --shadow: rgba(0,0,0,0.3);
+            --highlight-bg: #343536;
+            --highlight-hover: #3c3c3d;
+            --error-bg: #3a1a1a;
+            --error-text: #ff6b6b;
+            --score-bg: #343536;
+            --collapse-border: #343536;
+        }
+        
         * {
             box-sizing: border-box;
             margin: 0;
@@ -13,9 +47,10 @@
         
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background-color: #f6f7f8;
-            color: #1a1a1b;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
             line-height: 1.6;
+            transition: background-color 0.3s ease, color 0.3s ease;
         }
         
         .container {
@@ -25,16 +60,35 @@
         }
         
         header {
-            background-color: #fff;
+            background-color: var(--bg-secondary);
             padding: 20px;
             border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px var(--shadow);
             margin-bottom: 20px;
+            transition: background-color 0.3s ease;
         }
         
         h1 {
-            color: #1a1a1b;
+            color: var(--text-primary);
             margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .theme-toggle {
+            background: var(--highlight-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 14px;
+            color: var(--text-primary);
+            transition: all 0.3s ease;
+        }
+        
+        .theme-toggle:hover {
+            background: var(--highlight-hover);
         }
         
         .controls {
@@ -52,14 +106,17 @@
         
         label {
             font-size: 14px;
-            color: #696969;
+            color: var(--text-secondary);
         }
         
         input, select, button {
             padding: 10px;
-            border: 1px solid #ddd;
+            border: 1px solid var(--border-color);
             border-radius: 4px;
             font-size: 14px;
+            background-color: var(--bg-secondary);
+            color: var(--text-primary);
+            transition: all 0.3s ease;
         }
         
         input[type="url"] {
@@ -68,15 +125,14 @@
         }
         
         button {
-            background-color: #0079d3;
+            background-color: var(--accent-color);
             color: white;
             border: none;
             cursor: pointer;
-            transition: background-color 0.2s;
         }
         
         button:hover {
-            background-color: #0060a8;
+            background-color: var(--accent-hover);
         }
         
         button:disabled {
@@ -85,24 +141,20 @@
         }
         
         .stats {
-            background-color: #fff;
+            background-color: var(--bg-secondary);
             padding: 15px;
             border-radius: 8px;
             margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px var(--shadow);
+            transition: background-color 0.3s ease;
         }
         
         .comment {
-            background-color: #fff;
+            background-color: var(--bg-secondary);
             border-radius: 8px;
             margin-bottom: 10px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            transition: transform 0.2s;
-        }
-        
-        .comment:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px var(--shadow);
+            transition: background-color 0.3s ease, box-shadow 0.3s ease;
         }
         
         .comment-header {
@@ -118,19 +170,20 @@
             gap: 15px;
             align-items: center;
             font-size: 14px;
-            color: #696969;
+            color: var(--text-secondary);
         }
         
         .author {
             font-weight: bold;
-            color: #1a1a1b;
+            color: var(--text-primary);
         }
         
         .score {
-            background-color: #f6f7f8;
+            background-color: var(--score-bg);
             padding: 2px 8px;
             border-radius: 4px;
             font-weight: bold;
+            transition: background-color 0.3s ease;
         }
         
         .comment-body {
@@ -140,7 +193,7 @@
         }
         
         .comment-body a {
-            color: #0079d3;
+            color: var(--accent-color);
             text-decoration: none;
         }
         
@@ -157,17 +210,18 @@
         .comment-actions button {
             font-size: 12px;
             padding: 5px 10px;
-            background-color: #f6f7f8;
-            color: #1a1a1b;
+            background-color: var(--highlight-bg);
+            color: var(--text-primary);
+            transition: background-color 0.3s ease;
         }
         
         .comment-actions button:hover {
-            background-color: #e1e2e3;
+            background-color: var(--highlight-hover);
         }
         
         .children {
             margin-left: 20px;
-            border-left: 2px solid #e1e2e3;
+            border-left: 2px solid var(--collapse-border);
             padding-left: 10px;
         }
         
@@ -179,7 +233,7 @@
         
         .comment-snippet {
             display: none;
-            color: #696969;
+            color: var(--text-secondary);
             font-size: 13px;
             padding: 0 15px 10px;
             white-space: nowrap;
@@ -203,11 +257,12 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            background-color: #f6f7f8;
+            background-color: var(--highlight-bg);
             border-radius: 4px;
             font-weight: bold;
             font-size: 12px;
             cursor: pointer;
+            transition: background-color 0.3s ease;
         }
         
         .collapsed .collapse-indicator::after {
@@ -226,23 +281,25 @@
         .loading {
             text-align: center;
             padding: 40px;
-            color: #696969;
+            color: var(--text-secondary);
         }
         
         .error {
-            background-color: #fee;
-            color: #c00;
+            background-color: var(--error-bg);
+            color: var(--error-text);
             padding: 15px;
             border-radius: 8px;
             margin: 20px 0;
+            transition: background-color 0.3s ease;
         }
         
         .thread-info {
-            background-color: #fff;
+            background-color: var(--bg-secondary);
             padding: 15px;
             border-radius: 8px;
             margin-bottom: 20px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 4px var(--shadow);
+            transition: background-color 0.3s ease;
         }
         
         .thread-title {
@@ -278,7 +335,7 @@
         .video-link {
             display: inline-block;
             padding: 8px 16px;
-            background-color: #0079d3;
+            background-color: var(--accent-color);
             color: white;
             text-decoration: none;
             border-radius: 4px;
@@ -286,7 +343,7 @@
         }
         
         .video-link:hover {
-            background-color: #0060a8;
+            background-color: var(--accent-hover);
         }
         
         @media (max-width: 768px) {
@@ -310,13 +367,24 @@
             .comment-snippet {
                 max-width: 100%;
             }
+            
+            h1 {
+                flex-direction: column;
+                gap: 10px;
+                align-items: flex-start;
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>Reddit Comment Viewer</h1>
+            <h1>
+                Reddit Comment Viewer
+                <button class="theme-toggle" onclick="toggleTheme()">
+                    <span id="theme-icon">🌙</span> Dark Mode
+                </button>
+            </h1>
             
             <div class="controls">
                 <div class="control-group" style="flex: 1;">
@@ -385,6 +453,38 @@
     <script>
         let currentThreadId = null;
         let allComments = {};
+        
+        // Theme management
+        function initTheme() {
+            const savedTheme = localStorage.getItem('theme') || 'light';
+            document.documentElement.setAttribute('data-theme', savedTheme);
+            updateThemeButton(savedTheme);
+        }
+        
+        function toggleTheme() {
+            const currentTheme = document.documentElement.getAttribute('data-theme') || 'light';
+            const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+            
+            document.documentElement.setAttribute('data-theme', newTheme);
+            localStorage.setItem('theme', newTheme);
+            updateThemeButton(newTheme);
+        }
+        
+        function updateThemeButton(theme) {
+            const icon = document.getElementById('theme-icon');
+            const button = document.querySelector('.theme-toggle');
+            
+            if (theme === 'dark') {
+                icon.textContent = '☀️';
+                button.innerHTML = '<span id="theme-icon">☀️</span> Light Mode';
+            } else {
+                icon.textContent = '🌙';
+                button.innerHTML = '<span id="theme-icon">🌙</span> Dark Mode';
+            }
+        }
+        
+        // Initialize theme on page load
+        document.addEventListener('DOMContentLoaded', initTheme);
         
         function fetchThread() {
             const url = document.getElementById('thread-url').value;

@@ -118,26 +118,26 @@ def fetch_comments(thread_id, force_refresh=False):
     update_thread_status(thread_id, 'fetching')
     logger.info(f"Status set to 'fetching' for thread {thread_id}")
     
-    with db_lock:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        
-        # Check if we need to refresh
-        c.execute('SELECT last_fetched FROM threads WHERE id = ?', (thread_id,))
-        result = c.fetchone()
-        
-        if result and not force_refresh:
-            last_fetched = result[0]
-            # If fetched within last 5 minutes, use cache
-            if time.time() - last_fetched < 300:
-                logger.info(f"Using cached data for thread {thread_id}")
-                update_thread_status(thread_id, 'success')
-                conn.close()
-                return
-        
-        conn.close()
-    
     try:
+        with db_lock:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            # Check if we need to refresh
+            c.execute('SELECT last_fetched FROM threads WHERE id = ?', (thread_id,))
+            result = c.fetchone()
+            
+            if result and not force_refresh:
+                last_fetched = result[0]
+                # If fetched within last 5 minutes, use cache
+                if time.time() - last_fetched < 300:
+                    logger.info(f"Using cached data for thread {thread_id}")
+                    update_thread_status(thread_id, 'success')
+                    conn.close()
+                    return
+            
+            conn.close()
+        
         logger.info(f"Fetching comments for thread {thread_id}")
         
         # Test Reddit API connection first
@@ -171,10 +171,12 @@ def fetch_comments(thread_id, force_refresh=False):
         max_retries = 3
         retry_count = 0
         
+        logger.info(f"Starting to replace more comments for thread {thread_id}")
         while retry_count < max_retries:
             try:
                 logger.info(f"Replacing more comments (attempt {retry_count + 1}/{max_retries})")
                 submission.comments.replace_more(limit=32)
+                logger.info(f"Successfully replaced more comments for thread {thread_id}")
                 break
             except TooManyRequests as e:
                 retry_count += 1
@@ -190,9 +192,10 @@ def fetch_comments(thread_id, force_refresh=False):
                 time.sleep(wait_time)
             except Exception as e:
                 retry_count += 1
+                logger.error(f"Error during replace_more (attempt {retry_count}/{max_retries}): {e}")
                 if retry_count >= max_retries:
-                    error_msg = f"Error fetching comments: {str(e)}"
-                    logger.error(f"Error during replace_more: {e}")
+                    error_msg = f"Error fetching comments after {max_retries} attempts: {str(e)}"
+                    logger.error(f"Failed to replace more comments: {e}")
                     update_thread_status(thread_id, 'error', error_msg)
                     return
                 
@@ -201,7 +204,7 @@ def fetch_comments(thread_id, force_refresh=False):
                 time.sleep(wait_time)
         
         # Process all comments
-        logger.info("Processing comments...")
+        logger.info(f"Starting to process comments for thread {thread_id}")
         comments_data = []
         comment_count = 0
         
@@ -247,50 +250,63 @@ def fetch_comments(thread_id, force_refresh=False):
                 if comment_count % 1000 == 0:
                     logger.info(f"Processed {comment_count} comments...")
             
-            logger.info(f"Finished processing {comment_count} comments")
+            logger.info(f"Finished processing {comment_count} comments for thread {thread_id}")
             
         except Exception as e:
             error_msg = f"Error processing comments: {str(e)}"
-            logger.error(f"Error processing comments: {e}")
+            logger.error(f"Error processing comments for thread {thread_id}: {e}")
+            logger.error(traceback.format_exc())
             update_thread_status(thread_id, 'error', error_msg)
             return
         
         # Store in database
-        with db_lock:
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            
-            try:
-                # Store thread info
-                c.execute('''
-                    INSERT OR REPLACE INTO threads (id, title, url, last_fetched, fetch_status, error_message)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                ''', (thread_id, submission.title, submission.url, int(time.time()), 'success', None))
+        logger.info(f"Starting database storage for thread {thread_id} with {len(comments_data)} comments")
+        try:
+            with db_lock:
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
                 
-                # Clear old comments for this thread
-                c.execute('DELETE FROM comments WHERE thread_id = ?', (thread_id,))
-                
-                # Bulk insert comments
-                if comments_data:
-                    c.executemany('''
-                        INSERT INTO comments 
-                        (id, thread_id, parent_id, author, body, score, created_utc, is_root, depth, permalink, last_updated)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', comments_data)
-                
-                conn.commit()
-                logger.info(f"Successfully stored {len(comments_data)} comments for thread {thread_id}")
-                
-                # CRITICAL: Update status to success AFTER successful database commit
-                update_thread_status(thread_id, 'success')
-                logger.info(f"Status updated to 'success' for thread {thread_id}")
-                
-            except Exception as e:
-                error_msg = f"Database error: {str(e)}"
-                logger.error(f"Database error: {e}")
-                update_thread_status(thread_id, 'error', error_msg)
-            finally:
-                conn.close()
+                try:
+                    # Store thread info
+                    logger.info(f"Storing thread info for {thread_id}")
+                    c.execute('''
+                        INSERT OR REPLACE INTO threads (id, title, url, last_fetched, fetch_status, error_message)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    ''', (thread_id, submission.title, submission.url, int(time.time()), 'success', None))
+                    
+                    # Clear old comments for this thread
+                    logger.info(f"Clearing old comments for thread {thread_id}")
+                    c.execute('DELETE FROM comments WHERE thread_id = ?', (thread_id,))
+                    
+                    # Bulk insert comments
+                    if comments_data:
+                        logger.info(f"Inserting {len(comments_data)} comments for thread {thread_id}")
+                        c.executemany('''
+                            INSERT INTO comments 
+                            (id, thread_id, parent_id, author, body, score, created_utc, is_root, depth, permalink, last_updated)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ''', comments_data)
+                    
+                    conn.commit()
+                    logger.info(f"Successfully stored {len(comments_data)} comments for thread {thread_id}")
+                    
+                    # CRITICAL: Update status to success AFTER successful database commit
+                    update_thread_status(thread_id, 'success')
+                    logger.info(f"Status updated to 'success' for thread {thread_id}")
+                    
+                except Exception as e:
+                    error_msg = f"Database error: {str(e)}"
+                    logger.error(f"Database error for thread {thread_id}: {e}")
+                    logger.error(traceback.format_exc())
+                    update_thread_status(thread_id, 'error', error_msg)
+                finally:
+                    conn.close()
+                    
+        except Exception as e:
+            error_msg = f"Database connection error: {str(e)}"
+            logger.error(f"Database connection error for thread {thread_id}: {e}")
+            logger.error(traceback.format_exc())
+            update_thread_status(thread_id, 'error', error_msg)
             
     except NotFound:
         error_msg = f"Reddit thread {thread_id} not found. Please check the URL."
@@ -298,7 +314,7 @@ def fetch_comments(thread_id, force_refresh=False):
         update_thread_status(thread_id, 'error', error_msg)
     except Exception as e:
         error_msg = f"Unexpected error fetching comments: {str(e)}"
-        logger.error(f"Unexpected error: {e}")
+        logger.error(f"Unexpected error for thread {thread_id}: {e}")
         logger.error(traceback.format_exc())
         update_thread_status(thread_id, 'error', error_msg)
 

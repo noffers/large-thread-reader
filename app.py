@@ -104,16 +104,28 @@ def update_thread_status(thread_id, status, error_message=None):
             }
             logger.info(f"Updated in-memory status for {thread_id}: {thread_status[thread_id]}")
         
-        # Also update database
+        # Also update database - use INSERT OR REPLACE to ensure record exists
         with db_lock:
             conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
+            
+            # First, try to update existing record
             c.execute('''
                 UPDATE threads 
                 SET fetch_status = ?, error_message = ?
                 WHERE id = ?
             ''', (status, error_message, thread_id))
             rows_updated = c.rowcount
+            
+            # If no rows were updated, insert a minimal record
+            if rows_updated == 0:
+                logger.info(f"No existing thread record for {thread_id}, creating one")
+                c.execute('''
+                    INSERT INTO threads (id, title, url, last_fetched, fetch_status, error_message)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (thread_id, '', '', int(time.time()), status, error_message))
+                rows_updated = c.rowcount
+            
             conn.commit()
             conn.close()
             logger.info(f"Updated database status for {thread_id}: {rows_updated} rows affected")
@@ -572,8 +584,9 @@ def debug_thread(thread_id):
 def get_thread_status(thread_id):
     """Get the current status of thread fetching"""
     with status_lock:
-        status_info = thread_status.get(thread_id, {'status': 'unknown', 'error': None})
+        memory_status = thread_status.get(thread_id, None)
     
+    db_status = None
     # Also check database for persistent status
     try:
         with db_lock:
@@ -591,24 +604,31 @@ def get_thread_status(thread_id):
                     'last_fetched': row['last_fetched']
                 }
                 
-                # Combine in-memory and database status
-                if status_info['status'] == 'unknown' and db_status['status'] != 'unknown':
-                    status_info = db_status
-                elif status_info['status'] == 'fetching' and db_status['status'] == 'success':
-                    # Database shows success but memory shows fetching - update memory
-                    logger.info(f"Syncing status: DB shows success for {thread_id}, updating memory")
-                    with status_lock:
-                        thread_status[thread_id] = {
-                            'status': 'success',
-                            'error': None,
-                            'timestamp': time.time()
-                        }
-                    status_info = {'status': 'success', 'error': None, 'timestamp': time.time()}
-                
     except Exception as e:
-        logger.error(f"Error getting thread status: {e}")
+        logger.error(f"Error getting thread status from database: {e}")
     
-    return jsonify(status_info)
+    # Decide which status to return - prioritize memory if it's more recent and valid
+    if memory_status and memory_status.get('status') in ['fetching', 'success', 'error']:
+        # Memory status exists and is valid
+        if db_status and db_status.get('status') == 'success' and memory_status.get('status') == 'fetching':
+            # Database shows success but memory shows fetching - sync them
+            logger.info(f"Syncing status: DB shows success for {thread_id}, updating memory")
+            with status_lock:
+                thread_status[thread_id] = {
+                    'status': 'success',
+                    'error': None,
+                    'timestamp': time.time()
+                }
+            return jsonify({'status': 'success', 'error': None, 'timestamp': time.time()})
+        else:
+            # Use memory status (it's more current)
+            return jsonify(memory_status)
+    elif db_status:
+        # No valid memory status, use database
+        return jsonify(db_status)
+    else:
+        # Nothing found
+        return jsonify({'status': 'unknown', 'error': None, 'timestamp': time.time()})
 
 @app.route('/get_comments/<thread_id>')
 def get_comments(thread_id):

@@ -93,24 +93,34 @@ def init_db():
 
 def update_thread_status(thread_id, status, error_message=None):
     """Update thread fetching status"""
-    with status_lock:
-        thread_status[thread_id] = {
-            'status': status,
-            'error': error_message,
-            'timestamp': time.time()
-        }
+    logger.info(f"update_thread_status called: thread_id={thread_id}, status={status}, error={error_message}")
     
-    # Also update database
-    with db_lock:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        c.execute('''
-            UPDATE threads 
-            SET fetch_status = ?, error_message = ?
-            WHERE id = ?
-        ''', (status, error_message, thread_id))
-        conn.commit()
-        conn.close()
+    try:
+        with status_lock:
+            thread_status[thread_id] = {
+                'status': status,
+                'error': error_message,
+                'timestamp': time.time()
+            }
+            logger.info(f"Updated in-memory status for {thread_id}: {thread_status[thread_id]}")
+        
+        # Also update database
+        with db_lock:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            c.execute('''
+                UPDATE threads 
+                SET fetch_status = ?, error_message = ?
+                WHERE id = ?
+            ''', (status, error_message, thread_id))
+            rows_updated = c.rowcount
+            conn.commit()
+            conn.close()
+            logger.info(f"Updated database status for {thread_id}: {rows_updated} rows affected")
+            
+    except Exception as e:
+        logger.error(f"Error in update_thread_status for {thread_id}: {e}")
+        logger.error(traceback.format_exc())
 
 def fetch_comments(thread_id, force_refresh=False):
     """Fetch all comments from a Reddit thread with enhanced error handling"""
@@ -288,11 +298,26 @@ def fetch_comments(thread_id, force_refresh=False):
                         ''', comments_data)
                     
                     conn.commit()
-                    logger.info(f"Successfully stored {len(comments_data)} comments for thread {thread_id}")
+                    logger.info(f"Database commit successful for thread {thread_id}")
                     
                     # CRITICAL: Update status to success AFTER successful database commit
-                    update_thread_status(thread_id, 'success')
-                    logger.info(f"Status updated to 'success' for thread {thread_id}")
+                    logger.info(f"About to update status to 'success' for thread {thread_id}")
+                    try:
+                        update_thread_status(thread_id, 'success')
+                        logger.info(f"Status successfully updated to 'success' for thread {thread_id}")
+                    except Exception as status_error:
+                        logger.error(f"Failed to update status to success for thread {thread_id}: {status_error}")
+                        logger.error(traceback.format_exc())
+                        # Even if status update fails, we successfully stored comments
+                        # So manually update database
+                        try:
+                            c.execute('UPDATE threads SET fetch_status = ? WHERE id = ?', ('success', thread_id))
+                            conn.commit()
+                            logger.info(f"Manually updated database status to success for thread {thread_id}")
+                        except Exception as db_status_error:
+                            logger.error(f"Failed to manually update database status: {db_status_error}")
+                    
+                    logger.info(f"Successfully stored {len(comments_data)} comments for thread {thread_id}")
                     
                 except Exception as e:
                     error_msg = f"Database error: {str(e)}"
@@ -458,6 +483,50 @@ def fetch_thread():
     Thread(target=fetch_comments, args=(thread_id, True)).start()
     
     return jsonify({'thread_id': thread_id, 'status': 'fetching'})
+
+@app.route('/fix_status/<thread_id>', methods=['POST'])
+def fix_thread_status(thread_id):
+    """Fix thread status if comments exist but status is stuck on fetching"""
+    try:
+        with db_lock:
+            conn = sqlite3.connect(DB_PATH)
+            c = conn.cursor()
+            
+            # Check if comments exist
+            c.execute('SELECT COUNT(*) as comment_count FROM comments WHERE thread_id = ?', (thread_id,))
+            count_row = c.fetchone()
+            comment_count = count_row[0] if count_row else 0
+            
+            if comment_count > 0:
+                # Comments exist, update status to success
+                c.execute('UPDATE threads SET fetch_status = ? WHERE id = ?', ('success', thread_id))
+                conn.commit()
+                
+                # Also update in-memory status
+                with status_lock:
+                    thread_status[thread_id] = {
+                        'status': 'success',
+                        'error': None,
+                        'timestamp': time.time()
+                    }
+                
+                logger.info(f"Manually fixed status for thread {thread_id} with {comment_count} comments")
+                conn.close()
+                
+                return jsonify({
+                    'status': 'fixed',
+                    'message': f'Status updated to success for thread with {comment_count} comments'
+                })
+            else:
+                conn.close()
+                return jsonify({
+                    'status': 'no_comments',
+                    'message': 'No comments found in database for this thread'
+                }), 400
+                
+    except Exception as e:
+        logger.error(f"Error fixing status for thread {thread_id}: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/debug_thread/<thread_id>')
 def debug_thread(thread_id):

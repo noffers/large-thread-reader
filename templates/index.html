@@ -577,16 +577,6 @@
             });
         }
         
-        // Add a quick test function for debugging the current stuck thread
-        function testCurrentThread() {
-            if (currentThreadId) {
-                console.log('Testing current thread:', currentThreadId);
-                debugThread();
-            } else {
-                console.log('No current thread ID available');
-            }
-        }
-        
         let pollCount = 0;
         const MAX_POLLS = 40; // 40 polls * 3 seconds = 2 minutes max
         
@@ -1162,15 +1152,6 @@
         document.getElementById('thread-url').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 fetchThread();
-            }
-        });
-        
-        // Add keyboard shortcut for testing (Ctrl+D)
-        document.addEventListener('keydown', function(e) {
-            if (e.ctrlKey && e.key === 'd' && currentThreadId) {
-                e.preventDefault();
-                console.log('Debug shortcut triggered');
-                debugThread();
             }
         });
     </script>

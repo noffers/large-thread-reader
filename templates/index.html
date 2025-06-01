@@ -486,6 +486,8 @@
         // Initialize theme on page load
         document.addEventListener('DOMContentLoaded', initTheme);
         
+        let fetchInterval = null;
+
         function fetchThread() {
             const url = document.getElementById('thread-url').value;
             if (!url) {
@@ -495,6 +497,7 @@
             
             document.getElementById('fetch-btn').disabled = true;
             document.getElementById('loading').style.display = 'block';
+            document.getElementById('loading').textContent = 'Starting fetch...';
             document.getElementById('error').style.display = 'none';
             
             fetch('/fetch_thread', {
@@ -513,35 +516,94 @@
             .then(data => {
                 if (data.error) {
                     showError(data.error);
+                    document.getElementById('fetch-btn').disabled = false;
                 } else {
                     currentThreadId = data.thread_id;
-                    document.getElementById('loading').textContent = 'Fetching comments from Reddit (this may take 30-60 seconds for large threads)...';
-                    setTimeout(() => loadComments(), 2000);
+                    // Start polling for status
+                    pollFetchStatus();
                 }
             })
             .catch(error => {
                 showError('Failed to fetch thread: ' + error.message);
-            })
-            .finally(() => {
                 document.getElementById('fetch-btn').disabled = false;
             });
         }
+
+        function pollFetchStatus() {
+            if (!currentThreadId) return;
+            
+            // Clear any existing interval
+            if (fetchInterval) {
+                clearInterval(fetchInterval);
+            }
+            
+            let pollCount = 0;
+            const maxPolls = 120; // 2 minutes max with 1 second intervals
+            
+            fetchInterval = setInterval(() => {
+                pollCount++;
+                
+                fetch(`/fetch_status/${currentThreadId}`)
+                .then(response => response.json())
+                .then(status => {
+                    // Update loading message with progress
+                    if (status.progress) {
+                        document.getElementById('loading').textContent = status.progress;
+                    }
+                    
+                    if (status.status === 'complete') {
+                        clearInterval(fetchInterval);
+                        fetchInterval = null;
+                        document.getElementById('loading').style.display = 'none';
+                        document.getElementById('fetch-btn').disabled = false;
+                        // Load the comments now that fetching is complete
+                        loadComments();
+                    } else if (status.status === 'error') {
+                        clearInterval(fetchInterval);
+                        fetchInterval = null;
+                        showError('Error fetching comments: ' + (status.progress || 'Unknown error'));
+                        document.getElementById('fetch-btn').disabled = false;
+                    } else if (pollCount >= maxPolls) {
+                        clearInterval(fetchInterval);
+                        fetchInterval = null;
+                        showError('Fetch timeout - the thread may be too large. Try refreshing the page and fetching again.');
+                        document.getElementById('fetch-btn').disabled = false;
+                    }
+                })
+                .catch(error => {
+                    console.error('Error polling status:', error);
+                    // Don't stop polling on individual errors
+                });
+            }, 1000); // Poll every second
+        }
+
         
         function refreshThread() {
             if (!currentThreadId) return;
             
             document.getElementById('refresh-btn').disabled = true;
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('loading').textContent = 'Refreshing thread...';
             
             fetch(`/refresh_thread/${currentThreadId}`, {
                 method: 'POST'
             })
             .then(() => {
-                setTimeout(() => loadComments(), 2000);
+                // Start polling for status
+                pollFetchStatus();
             })
-            .finally(() => {
+            .catch(error => {
+                showError('Failed to refresh: ' + error.message);
                 document.getElementById('refresh-btn').disabled = false;
             });
         }
+
+        // Clean up on page unload
+        window.addEventListener('beforeunload', () => {
+            if (fetchInterval) {
+                clearInterval(fetchInterval);
+            }
+        });
         
         function loadComments() {
             if (!currentThreadId) return;

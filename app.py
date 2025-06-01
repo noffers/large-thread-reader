@@ -28,8 +28,8 @@ REDDIT_CLIENT_ID = os.environ.get('REDDIT_CLIENT_ID', 'your_client_id')
 REDDIT_CLIENT_SECRET = os.environ.get('REDDIT_CLIENT_SECRET', 'your_client_secret')
 REDDIT_USER_AGENT = os.environ.get('REDDIT_USER_AGENT', 'RedditCommentViewer/1.0')
 
-# Configuration
-REPLACE_MORE_LIMIT = int(os.environ.get('REPLACE_MORE_LIMIT', 32))  # Adjust for speed vs completeness
+# Configuration - INCREASED LIMIT
+REPLACE_MORE_LIMIT = int(os.environ.get('REPLACE_MORE_LIMIT', 100))  # Increased from 32
 
 # Thread pool for running async tasks
 executor = ThreadPoolExecutor(max_workers=4)
@@ -47,6 +47,10 @@ async def get_reddit_instance():
 DB_PATH = 'reddit_comments.db'
 db_lock = Lock()
 async_lock = Lock()  # Lock for async operations
+
+# Track fetching status
+fetch_status = {}
+status_lock = Lock()
 
 def init_db():
     """Initialize the SQLite database"""
@@ -72,7 +76,8 @@ def init_db():
             id TEXT PRIMARY KEY,
             title TEXT,
             url TEXT,
-            last_fetched INTEGER
+            last_fetched INTEGER,
+            fetch_status TEXT DEFAULT 'idle'
         )
     ''')
     conn.commit()
@@ -80,9 +85,16 @@ def init_db():
 
 async def fetch_comments_async(thread_id, force_refresh=False):
     """Fetch all comments from a Reddit thread asynchronously"""
+    # Update status to fetching
+    with status_lock:
+        fetch_status[thread_id] = {'status': 'fetching', 'progress': 'Checking cache...'}
+    
     with db_lock:
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
+        
+        # Update fetch status in DB
+        cursor.execute('UPDATE threads SET fetch_status = ? WHERE id = ?', ('fetching', thread_id))
         
         # Check if we need to refresh
         cursor.execute('SELECT last_fetched FROM threads WHERE id = ?', (thread_id,))
@@ -92,42 +104,70 @@ async def fetch_comments_async(thread_id, force_refresh=False):
             last_fetched = result[0]
             # If fetched within last 5 minutes, use cache
             if time.time() - last_fetched < 300:
+                cursor.execute('UPDATE threads SET fetch_status = ? WHERE id = ?', ('complete', thread_id))
+                conn.commit()
                 conn.close()
+                with status_lock:
+                    fetch_status[thread_id] = {'status': 'complete', 'progress': 'Using cached data'}
                 return
         
+        conn.commit()
         conn.close()
     
     reddit = await get_reddit_instance()
     
     try:
+        with status_lock:
+            fetch_status[thread_id] = {'status': 'fetching', 'progress': 'Connecting to Reddit...'}
+            
         submission = await reddit.submission(id=thread_id)
         
         # Fetch submission data first
         await submission.load()
         
-        # Replace more comments - using async approach for better performance
-        # This is typically 2-3x faster than synchronous praw
-        # Limit to avoid timeouts, but process them concurrently
-        await submission.comments.replace_more(limit=REPLACE_MORE_LIMIT)
+        with status_lock:
+            fetch_status[thread_id] = {'status': 'fetching', 'progress': f'Loading comments for: {submission.title[:50]}...'}
+        
+        print(f"Fetching comments for thread: {submission.title}")
+        print(f"Starting replace_more with limit={REPLACE_MORE_LIMIT}")
+        
+        # Replace more comments with higher limit and threshold
+        with status_lock:
+            fetch_status[thread_id] = {'status': 'fetching', 'progress': 'Expanding comment threads (this may take a while)...'}
+            
+        await submission.comments.replace_more(limit=REPLACE_MORE_LIMIT, threshold=0)
+        
+        # Build a dictionary for quick parent lookups
+        comment_dict = {}
+        all_comments = await submission.comments.list()
+        
+        print(f"Total comments after replace_more: {len(all_comments)}")
+        
+        with status_lock:
+            fetch_status[thread_id] = {'status': 'fetching', 'progress': f'Processing {len(all_comments)} comments...'}
+        
+        # First pass: create comment dictionary
+        for comment in all_comments:
+            if hasattr(comment, 'id'):
+                comment_dict[comment.id] = comment
         
         with db_lock:
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             
-            # Store thread info
+            # Store thread info with complete status
             cursor.execute('''
-                INSERT OR REPLACE INTO threads (id, title, url, last_fetched)
-                VALUES (?, ?, ?, ?)
-            ''', (thread_id, submission.title, submission.url, int(time.time())))
+                INSERT OR REPLACE INTO threads (id, title, url, last_fetched, fetch_status)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (thread_id, submission.title, submission.url, int(time.time()), 'complete'))
             
             # Clear old comments for this thread
             cursor.execute('DELETE FROM comments WHERE thread_id = ?', (thread_id,))
             
             # Process all comments
             comments_data = []
-            comment_list = await submission.comments.list()
             
-            for comment in comment_list:
+            for comment in all_comments:
                 if not hasattr(comment, 'id'):  # Skip non-comment objects
                     continue
                 
@@ -135,26 +175,20 @@ async def fetch_comments_async(thread_id, force_refresh=False):
                 is_root = comment.parent_id.startswith('t3_')
                 parent_id = None if is_root else comment.parent_id[3:]
                 
-                # Calculate depth
+                # Calculate depth more accurately
                 depth = 0
                 if not is_root:
-                    temp_comment = comment
-                    while hasattr(temp_comment, 'parent_id') and not temp_comment.parent_id.startswith('t3_'):
-                        depth += 1
-                        if depth > 10:  # Prevent infinite loops
-                            break
-                        try:
-                            parent_id_temp = temp_comment.parent_id[3:]
-                            # Find parent in our current list
-                            found = False
-                            for parent_comment in comment_list:
-                                if hasattr(parent_comment, 'id') and parent_comment.id == parent_id_temp:
-                                    temp_comment = parent_comment
-                                    found = True
-                                    break
-                            if not found:
+                    current_parent_id = parent_id
+                    while current_parent_id and depth < 20:  # Limit depth to prevent infinite loops
+                        if current_parent_id in comment_dict:
+                            parent_comment = comment_dict[current_parent_id]
+                            if parent_comment.parent_id.startswith('t3_'):
+                                depth += 1
                                 break
-                        except:
+                            else:
+                                depth += 1
+                                current_parent_id = parent_comment.parent_id[3:]
+                        else:
                             break
                 
                 comments_data.append((
@@ -180,17 +214,57 @@ async def fetch_comments_async(thread_id, force_refresh=False):
             
             conn.commit()
             conn.close()
-            print(f"Fetched {len(comments_data)} comments for thread {thread_id} (async)")
+            
+            # Log statistics about the fetch
+            root_comments = [c for c in comments_data if c[7]]  # is_root is at index 7
+            print(f"Fetched {len(comments_data)} total comments")
+            print(f"Root comments: {len(root_comments)}")
+            print(f"Average children per root: {(len(comments_data) - len(root_comments)) / len(root_comments) if root_comments else 0:.1f}")
+            
+            with status_lock:
+                fetch_status[thread_id] = {'status': 'complete', 'progress': f'Fetched {len(comments_data)} comments'}
             
     except NotFound:
         print(f"Thread {thread_id} not found")
+        with status_lock:
+            fetch_status[thread_id] = {'status': 'error', 'progress': 'Thread not found'}
+        with db_lock:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute('UPDATE threads SET fetch_status = ? WHERE id = ?', ('error', thread_id))
+            conn.commit()
+            conn.close()
     except (RequestException, ResponseException) as e:
         print(f"Reddit API error: {e}")
+        with status_lock:
+            fetch_status[thread_id] = {'status': 'error', 'progress': f'Reddit API error: {str(e)}'}
+        with db_lock:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute('UPDATE threads SET fetch_status = ? WHERE id = ?', ('error', thread_id))
+            conn.commit()
+            conn.close()
     except asyncio.TimeoutError:
         print(f"Timeout fetching comments for thread {thread_id}")
+        with status_lock:
+            fetch_status[thread_id] = {'status': 'error', 'progress': 'Timeout - thread too large'}
+        with db_lock:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute('UPDATE threads SET fetch_status = ? WHERE id = ?', ('error', thread_id))
+            conn.commit()
+            conn.close()
     except Exception as e:
         print(f"Error fetching comments: {e}")
         traceback.print_exc()
+        with status_lock:
+            fetch_status[thread_id] = {'status': 'error', 'progress': f'Error: {str(e)}'}
+        with db_lock:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute('UPDATE threads SET fetch_status = ? WHERE id = ?', ('error', thread_id))
+            conn.commit()
+            conn.close()
     finally:
         await reddit.close()
 
@@ -200,11 +274,11 @@ def fetch_comments(thread_id, force_refresh=False):
         # Create a new event loop for this thread
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        # Set a timeout of 2 minutes for the entire operation
+        # Set a timeout of 3 minutes for the entire operation (increased from 2)
         loop.run_until_complete(
             asyncio.wait_for(
                 fetch_comments_async(thread_id, force_refresh),
-                timeout=120.0
+                timeout=180.0
             )
         )
     except asyncio.TimeoutError:
@@ -258,6 +332,10 @@ def get_comments_filtered(thread_id, hours=24, sort_by='score', min_score=1):
             thread_row = cursor.fetchone()
             thread_info = dict(thread_row) if thread_row else None
             
+            # Debug: Count root comments and their children
+            root_count = sum(1 for c in comments if c['is_root'])
+            print(f"Filtered results: {len(comments)} total, {root_count} root comments")
+            
             return comments, thread_info
         except Exception as e:
             print(f"Error in get_comments_filtered: {str(e)}")
@@ -279,6 +357,10 @@ def build_comment_tree(comments):
     roots = []
     orphaned = []
     
+    # Debug counters
+    attached_children = 0
+    orphaned_children = 0
+    
     # Now build the tree structure
     for comment in comments:
         if comment['is_root']:
@@ -286,14 +368,18 @@ def build_comment_tree(comments):
         elif comment['parent_id'] in comment_dict:
             # Parent exists in filtered set
             comment_dict[comment['parent_id']]['children'].append(comment)
+            attached_children += 1
         else:
             # Parent was filtered out, treat as orphaned root
+            comment['is_orphaned'] = True
             orphaned.append(comment)
+            orphaned_children += 1
     
     # Add orphaned comments as roots with a special indicator
-    for comment in orphaned:
-        comment['is_orphaned'] = True
-        roots.append(comment)
+    roots.extend(orphaned)
+    
+    print(f"Tree building: {len(roots)} roots ({len(roots)-len(orphaned)} true roots, {len(orphaned)} orphaned)")
+    print(f"Children: {attached_children} attached, {orphaned_children} orphaned")
     
     return roots
 
@@ -317,6 +403,21 @@ def fetch_thread():
     
     if not thread_id:
         return jsonify({'error': 'Invalid thread URL'}), 400
+    
+    # Initialize status
+    with status_lock:
+        fetch_status[thread_id] = {'status': 'starting', 'progress': 'Initializing...'}
+    
+    # Ensure thread exists in DB
+    with db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('''
+            INSERT OR IGNORE INTO threads (id, title, url, last_fetched, fetch_status)
+            VALUES (?, '', '', 0, 'fetching')
+        ''', (thread_id,))
+        conn.commit()
+        conn.close()
     
     # Start fetching in background thread
     Thread(target=fetch_comments, args=(thread_id, True), daemon=True).start()
@@ -354,6 +455,28 @@ def refresh_thread(thread_id):
     """Refresh comments for a thread"""
     Thread(target=fetch_comments, args=(thread_id, True), daemon=True).start()
     return jsonify({'status': 'refreshing'})
+
+# THIS IS THE MISSING ROUTE!
+@app.route('/fetch_status/<thread_id>')
+def get_fetch_status(thread_id):
+    """Get the current fetch status for a thread"""
+    with status_lock:
+        status = fetch_status.get(thread_id, {'status': 'unknown', 'progress': ''})
+    
+    # Also check DB status
+    with db_lock:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute('SELECT fetch_status FROM threads WHERE id = ?', (thread_id,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            db_status = result[0]
+            if db_status == 'complete' and status['status'] != 'complete':
+                status = {'status': 'complete', 'progress': 'Ready'}
+    
+    return jsonify(status)
 
 @app.template_filter('format_time')
 def format_time(timestamp):

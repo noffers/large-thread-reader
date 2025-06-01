@@ -565,7 +565,6 @@
                 } else {
                     pollCount = 0; // Reset poll counter for refresh
                     document.getElementById('loading').textContent = 'Refreshing comments from Reddit...';
-                    document.getElementById('debug-btn').style.display = 'inline-block'; // Show debug button
                     // Wait before starting to poll to ensure background thread is running
                     setTimeout(() => pollThreadStatus(), 1000);
                 }
@@ -1087,13 +1086,6 @@
                     }
                 }
                 
-                // If comments exist but status is still fetching, offer to load them
-                if (data.comment_count > 0 && data.memory_status.status === 'fetching') {
-                    debugInfo += `<br><strong>🔧 Fix Available:</strong> Comments are stored but status is stuck!<br>`;
-                    debugInfo += `<button onclick="fixStatus()" style="margin: 5px; padding: 8px 16px; background-color: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer;">Fix Status & Load</button>`;
-                    debugInfo += `<button onclick="forceLoadComments()" style="margin: 5px; padding: 8px 16px; background-color: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">Just Load Comments</button>`;
-                }
-                
                 showSuccess(debugInfo);
             })
             .catch(error => {
@@ -1103,43 +1095,6 @@
             .finally(() => {
                 debugBtn.disabled = false;
                 debugBtn.textContent = originalText;
-            });
-        }
-        
-        function forceLoadComments() {
-            console.log('Force loading comments...');
-            document.getElementById('error').style.display = 'none';
-            loadComments();
-        }
-        
-        function fixStatus() {
-            if (!currentThreadId) {
-                showError('No thread ID available');
-                return;
-            }
-            
-            console.log('Fixing status for thread:', currentThreadId);
-            
-            fetch(`/fix_status/${currentThreadId}`, {
-                method: 'POST'
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.status === 'fixed') {
-                    showSuccess(`✅ Status fixed! ${data.message}`);
-                    // Now load the comments
-                    setTimeout(() => {
-                        pollCount = 0;
-                        document.getElementById('error').style.display = 'none';
-                        loadComments();
-                    }, 1000);
-                } else {
-                    showError(`❌ Could not fix status: ${data.message}`);
-                }
-            })
-            .catch(error => {
-                showError(`❌ Fix failed: ${error.message}`);
-                console.error('Fix status error:', error);
             });
         }
         

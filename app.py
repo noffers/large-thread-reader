@@ -428,7 +428,7 @@ def fetch_thread():
 def get_comments(thread_id):
     """Get filtered comments for a thread"""
     try:
-        hours = int(request.args.get('hours', 24))
+        hours = float(request.args.get('hours', 24))
         sort_by = request.args.get('sort', 'score')
         min_score = int(request.args.get('min_score', 1))
         
